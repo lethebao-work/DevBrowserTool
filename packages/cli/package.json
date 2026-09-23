@@ -1,0 +1,16 @@
+{
+  "name": "@devbrowsertool/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "devbrowsertool": "./bin/devbrowsertool.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@devbrowsertool/core": "*",
+    "devbrowsertool-ui": "*"
+  }
+}

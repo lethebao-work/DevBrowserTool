@@ -1,0 +1,31 @@
+{
+  "name": "devbrowsertool",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI Agent system for browser interaction, knowledge accumulation, and automated tool generation",
+  "type": "module",
+  "workspaces": [
+    "packages/core",
+    "packages/ui",
+    "packages/cli"
+  ],
+  "bin": {
+    "devbrowsertool": "./packages/cli/bin/devbrowsertool.js"
+  },
+  "scripts": {
+    "devbrowsertool": "node packages/cli/bin/devbrowsertool.js",
+    "ui": "node packages/cli/bin/devbrowsertool.js ui",
+    "build": "npm run build --workspaces",
+    "build:core": "npm run build -w packages/core",
+    "build:ui": "npm run build -w packages/ui",
+    "dev:ui": "npm run dev -w packages/ui",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "eslint . --ext .ts,.tsx"
+  },
+  "dependencies": {
+    "@devbrowsertool/cli": "*"
+  },
+  "keywords": ["browser-automation", "ai-agent", "chrome-extension", "web-tool-generator"],
+  "author": "",
+  "license": "MIT"
+}

@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# Build outputs & bundles
+dist/
+build/
+out/
+*.vsix
+*.tsbuildinfo
+
+# Testing & Coverage
+coverage/
+*.lcov
+.nyc_output/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+*.local
+
+# IDE & Tool caches
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+.codegraph/
+.turbo/
+.cache/
+.vite/
+.vite-temp/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini

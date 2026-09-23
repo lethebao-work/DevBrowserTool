@@ -1,0 +1,40 @@
+{
+  "name": "@devbrowsertool/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./map": {
+      "import": "./dist/map/index.js",
+      "types": "./dist/map/index.d.ts"
+    },
+    "./actions": {
+      "import": "./dist/actions/index.js",
+      "types": "./dist/actions/index.d.ts"
+    },
+    "./engine": {
+      "import": "./dist/engine/index.js",
+      "types": "./dist/engine/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "playwright": "^1.63.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}

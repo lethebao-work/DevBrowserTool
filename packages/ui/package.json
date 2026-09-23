@@ -1,0 +1,82 @@
+{
+  "name": "devbrowsertool-ui",
+  "displayName": "DevBrowserTool UI & Map Inspector",
+  "publisher": "devbrowsertool",
+  "description": "Visual Map Viewer, Demo Recording controls, and Tool Build Flow for VS Code",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/extension.cjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/web-server.js",
+      "types": "./dist/web-server.d.ts"
+    }
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:devbrowsertool.openStudio",
+    "onCommand:devbrowsertool.openMapViewer",
+    "onCommand:devbrowsertool.startRecording",
+    "onCommand:devbrowsertool.stopRecording",
+    "onCommand:devbrowsertool.buildTool",
+    "onCommand:devbrowsertool.exportMap",
+    "onCommand:devbrowsertool.importMap"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "devbrowsertool.openStudio",
+        "title": "Open DevBrowser Studio & Live HUD",
+        "category": "DevBrowserTool"
+      },
+      {
+        "command": "devbrowsertool.openMapViewer",
+        "title": "Open Map Viewer & Inspector",
+        "category": "DevBrowserTool"
+      },
+      {
+        "command": "devbrowsertool.startRecording",
+        "title": "Start Demo Recording",
+        "category": "DevBrowserTool"
+      },
+      {
+        "command": "devbrowsertool.stopRecording",
+        "title": "Stop Demo Recording",
+        "category": "DevBrowserTool"
+      },
+      {
+        "command": "devbrowsertool.buildTool",
+        "title": "Build Chrome Extension from Map",
+        "category": "DevBrowserTool"
+      },
+      {
+        "command": "devbrowsertool.exportMap",
+        "title": "Export Map to JSON",
+        "category": "DevBrowserTool"
+      },
+      {
+        "command": "devbrowsertool.importMap",
+        "title": "Import Map from JSON",
+        "category": "DevBrowserTool"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && npm run bundle",
+    "bundle": "esbuild src/extension.ts --bundle --platform=node --target=node18 --external:vscode --external:chromium-bidi* --format=cjs --outfile=dist/extension.cjs"
+  },
+  "dependencies": {
+    "@devbrowsertool/core": "*"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.6.0"
+  }
+}
