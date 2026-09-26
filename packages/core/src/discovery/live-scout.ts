@@ -14,28 +14,23 @@
  * - Chế độ nạp trực tiếp từ MCP Browser Tab đang mở
  */
 
-import { chromium, type Browser, type Page } from 'playwright';
-import { PlaywrightBrowserAdapter } from '../adapters/playwright-browser.js';
-import { StaticAnalyzer } from './static-analyzer.js';
-import { AntiDebugChecker } from './anti-debug.js';
+import { chromium, type Browser } from 'playwright';
+import type { BrowserAdapter } from '../actions/primitives.js';
 import {
-  MAP_CONSTANTS,
   type MapFile,
   type ResourceNode,
   type Variant,
   type StateNode,
   type ToolConfig,
 } from '../map/schema.js';
+import { ScoutScripts } from './scout-scripts.js';
+import {
+  ScoutProcessor,
+  type DiscoveredNodeSummary,
+  type LiveScoutResult,
+} from './scout-processor.js';
 
-export interface DiscoveredNodeSummary {
-  id: string;
-  intent: string;
-  type: string;
-  category: 'dom_element' | 'endpoint' | 'local_persistence' | 'websocket_channel' | 'header_signature';
-  selector: string;
-  role: string;
-  sampleValue?: string;
-}
+export type { DiscoveredNodeSummary, LiveScoutResult };
 
 export interface LiveScoutOptions {
   headless?: boolean;
@@ -43,41 +38,99 @@ export interface LiveScoutOptions {
   waitForNetworkIdleMs?: number;
 }
 
-export interface LiveScoutResult {
-  success: boolean;
-  domain: string;
-  url: string;
-  title: string;
-  map: MapFile;
-  nodesCount: number;
-  summaryByType: {
-    domElements: number;
-    endpoints: number;
-    localPersistence: number;
-    webSockets: number;
-    headers: number;
-    states: number;
-  };
-  discoveredNodes: DiscoveredNodeSummary[];
-  error?: string;
-}
-
 export class LiveScoutEngine {
   /**
-   * Trực tiếp mở trình duyệt và bóc tách toàn diện 7 loại tài nguyên.
+   * Bóc tách toàn diện 7 loại tài nguyên từ trang web.
+   *
+   * Hỗ trợ:
+   * 1. BrowserAdapter (Kiến trúc A/C hoặc Agent injection):
+   *    LiveScoutEngine.scoutUrl(adapter, url, onProgress?, options?)
+   * 2. Trình duyệt trực tiếp qua Playwright (Legacy / Fast-path):
+   *    LiveScoutEngine.scoutUrl(url, onProgress?, options?)
    */
   static async scoutUrl(
-    url: string,
-    onProgress?: (message: string, color?: 'cyan' | 'yellow' | 'green' | 'red') => void,
-    options: LiveScoutOptions = {}
+    browserOrUrl: BrowserAdapter | string,
+    urlOrProgress?: string | ((message: string, color?: 'cyan' | 'yellow' | 'green' | 'red') => void),
+    optionsOrProgress?: LiveScoutOptions | ((message: string, color?: 'cyan' | 'yellow' | 'green' | 'red') => void),
+    maybeOptions?: LiveScoutOptions
   ): Promise<LiveScoutResult> {
-    let browser: Browser | null = null;
-    const isHeadless = options.headless ?? false; // Mặc định mở cửa sổ trực quan để user nhìn thấy
-    const timeoutMs = options.timeoutMs ?? 30000;
+    // ------------------------------------------------------------------------
+    // Chế độ 1: Dùng BrowserAdapter (McpBrowserAdapter / CdpDirectBrowserAdapter)
+    // ------------------------------------------------------------------------
+    if (typeof browserOrUrl === 'object' && browserOrUrl !== null) {
+      const adapter = browserOrUrl as BrowserAdapter;
+      const url = urlOrProgress as string;
+      const onProgress = typeof optionsOrProgress === 'function' ? optionsOrProgress : undefined;
 
-    const baseNodes: ResourceNode[] = [];
-    const discoveredSummaries: DiscoveredNodeSummary[] = [];
-    const nodeIdsSet = new Set<string>();
+      try {
+        onProgress?.(`Điều hướng tới: ${url} qua BrowserAdapter...`, 'cyan');
+        await adapter.navigate(url);
+
+        onProgress?.('Đang chạy kịch bản bóc tách tài nguyên qua ScoutScripts...', 'cyan');
+        const pageInfo = await adapter.evaluate<{ title: string; url: string }>(
+          ScoutScripts.getPageInfoScript().code
+        ).catch(() => ({ title: '', url }));
+
+        const domElements = await adapter.evaluate<any[]>(
+          ScoutScripts.getDomExtractionScript().code
+        ).catch(() => []);
+
+        const performanceEntries = await adapter.evaluate<any[]>(
+          ScoutScripts.getPerformanceExtractionScript().code
+        ).catch(() => []);
+
+        const storageKeys = await adapter.evaluate<any>(
+          ScoutScripts.getStorageExtractionScript().code
+        ).catch(() => ({ localStorageKeys: [], sessionStorageKeys: [] }));
+
+        const wsUrls = await adapter.evaluate<string[]>(
+          ScoutScripts.getWebSocketDetectionScript().code
+        ).catch(() => []);
+
+        return ScoutProcessor.processRawScoutData(
+          {
+            url,
+            pageInfo,
+            domElements,
+            performanceEntries,
+            storageKeys,
+            webSocketUrls: wsUrls,
+          },
+          onProgress
+        );
+      } catch (err: any) {
+        onProgress?.(`❌ Lỗi trong quá trình trinh sát qua BrowserAdapter: ${err.message}`, 'red');
+        return {
+          success: false,
+          domain: '',
+          url,
+          title: '',
+          map: null as any,
+          nodesCount: 0,
+          summaryByType: {
+            domElements: 0,
+            endpoints: 0,
+            localPersistence: 0,
+            webSockets: 0,
+            headers: 0,
+            states: 0,
+          },
+          discoveredNodes: [],
+          error: err.message || 'Unknown scout error',
+        };
+      }
+    }
+
+    // ------------------------------------------------------------------------
+    // Chế độ 2: Trình duyệt Playwright độc lập (Legacy / Headless / Local Run)
+    // ------------------------------------------------------------------------
+    const url = browserOrUrl as string;
+    const onProgress = typeof urlOrProgress === 'function' ? urlOrProgress : undefined;
+    const options: LiveScoutOptions = (typeof optionsOrProgress === 'object' ? optionsOrProgress : maybeOptions) || {};
+
+    let browser: Browser | null = null;
+    const isHeadless = options.headless ?? false;
+    const timeoutMs = options.timeoutMs ?? 30000;
 
     const capturedEndpoints: Array<{ url: string; method: string; headers: Record<string, string> }> = [];
     const capturedWebSockets: string[] = [];
@@ -91,7 +144,6 @@ export class LiveScoutEngine {
         'cyan'
       );
 
-      // 1. Mở Chrome thật trên hệ thống
       try {
         browser = await chromium.launch({
           channel: 'chrome',
@@ -149,195 +201,26 @@ export class LiveScoutEngine {
           '💡 Hãy giải quyết challenge trên cửa sổ Chrome đang mở hoặc dùng nút "Lấy từ Tab MCP"!',
           'cyan'
         );
-        // Cho người dùng 5 giây nếu đang mở cửa sổ trực quan
         if (!isHeadless) {
           await page.waitForTimeout(5000);
         }
       }
 
-      // ======================================================================
-      // 2. Bóc tách ENDPOINTS (Tài nguyên API từ Network Traffic & Performance)
-      // ======================================================================
       onProgress?.('Bóc tách API Endpoints từ Network Traffic & Performance Entries...', 'cyan');
+      const perfResources = await page.evaluate<Array<{ name: string; initiator: string }>>(
+        ScoutScripts.getPerformanceExtractionScript().code
+      ).catch(() => []);
 
-      const perfResources = await page.evaluate<Array<{ name: string; initiator: string }>>(`
-        (() => {
-          try {
-            return performance.getEntriesByType('resource').map(r => ({
-              name: r.name,
-              initiator: r.initiatorType
-            }));
-          } catch {
-            return [];
-          }
-        })()
-      `);
-
-      for (const res of perfResources) {
-        if (
-          res.initiator === 'fetch' ||
-          res.initiator === 'xmlhttprequest' ||
-          res.name.includes('/api/') ||
-          res.name.endsWith('.json')
-        ) {
-          capturedEndpoints.push({ url: res.name, method: 'GET', headers: {} });
-        }
-      }
-
-      // Khử trùng lặp endpoints theo pathname
-      const seenEndpointPaths = new Set<string>();
-      for (const ep of capturedEndpoints) {
-        try {
-          const epUrl = new URL(ep.url);
-          const pathKey = epUrl.pathname;
-          if (!seenEndpointPaths.has(pathKey)) {
-            seenEndpointPaths.add(pathKey);
-
-            const nodeId = `endpoint-${ep.method.toLowerCase()}-${pathKey.replace(/[^a-zA-Z0-9]/g, '_')}`.replace(/_{2,}/g, '_');
-            const epNode: ResourceNode = {
-              id: nodeId,
-              type: 'endpoint',
-              intent: `API ${ep.method} ${pathKey}`,
-              created_at: Date.now(),
-              updated_at: Date.now(),
-              discovered_via: 'normal',
-              requires_elevation: false,
-              variants: [
-                {
-                  id: `var-${nodeId}`,
-                  value_formula: ep.url,
-                  confidence: 1.0,
-                  last_verified: Date.now(),
-                  ttl_ms: MAP_CONSTANTS.TTL_NORMAL_MS,
-                  fail_count_recent: 0,
-                  locale: null,
-                  created_at: Date.now(),
-                },
-              ],
-            };
-
-            baseNodes.push(epNode);
-            nodeIdsSet.add(nodeId);
-            discoveredSummaries.push({
-              id: nodeId,
-              intent: epNode.intent,
-              type: 'api_endpoint',
-              category: 'endpoint',
-              selector: ep.url,
-              role: ep.method,
-            });
-
-            onProgress?.(`[ENDPOINT] ${epNode.intent}`, 'yellow');
-          }
-        } catch {}
-      }
-
-      // ======================================================================
-      // 3. Bóc tách WEBSOCKET CHANNELS
-      // ======================================================================
-      const uniqueWebSockets = Array.from(new Set(capturedWebSockets));
-      for (const ws of uniqueWebSockets) {
-        const wsId = `ws-${ws.replace(/[^a-zA-Z0-9]/g, '_')}`.slice(0, 40);
-        const wsNode: ResourceNode = {
-          id: wsId,
-          type: 'websocket_channel',
-          intent: `Kênh WebSocket: ${ws}`,
-          created_at: Date.now(),
-          updated_at: Date.now(),
-          discovered_via: 'normal',
-          requires_elevation: false,
-          variants: [
-            {
-              id: `var-${wsId}`,
-              value_formula: ws,
-              confidence: 1.0,
-              last_verified: Date.now(),
-              ttl_ms: MAP_CONSTANTS.TTL_NORMAL_MS,
-              fail_count_recent: 0,
-              locale: null,
-              created_at: Date.now(),
-            },
-          ],
-        };
-        baseNodes.push(wsNode);
-        nodeIdsSet.add(wsId);
-        discoveredSummaries.push({
-          id: wsId,
-          intent: wsNode.intent,
-          type: 'websocket',
-          category: 'websocket_channel',
-          selector: ws,
-          role: 'socket',
-        });
-        onProgress?.(`[WEBSOCKET] ${ws}`, 'yellow');
-      }
-
-      // ======================================================================
-      // 4. Bóc tách LOCAL_PERSISTENCE (LocalStorage, SessionStorage, Cookies)
-      // ======================================================================
       onProgress?.('Bóc tách kho lưu trữ cục bộ (LocalStorage, SessionStorage)...', 'cyan');
-
       const storageData = await page.evaluate<{
         localStorageKeys: string[];
         sessionStorageKeys: string[];
-      }>(`
-        (() => {
-          try {
-            return {
-              localStorageKeys: Object.keys(localStorage),
-              sessionStorageKeys: Object.keys(sessionStorage)
-            };
-          } catch {
-            return { localStorageKeys: [], sessionStorageKeys: [] };
-          }
-        })()
-      `);
+      }>(ScoutScripts.getStorageExtractionScript().code).catch(() => ({
+        localStorageKeys: [],
+        sessionStorageKeys: [],
+      }));
 
-      for (const key of storageData.localStorageKeys) {
-        const keyClean = key.replace(/[^a-zA-Z0-9_]/g, '_');
-        const nodeId = `persistence-ls-${keyClean}`.slice(0, 50);
-        if (!nodeIdsSet.has(nodeId)) {
-          nodeIdsSet.add(nodeId);
-
-          const rNode: ResourceNode = {
-            id: nodeId,
-            type: 'local_persistence',
-            intent: `LocalStorage: ${key}`,
-            created_at: Date.now(),
-            updated_at: Date.now(),
-            discovered_via: 'normal',
-            requires_elevation: false,
-            variants: [
-              {
-                id: `var-${nodeId}`,
-                value_formula: `localStorage.getItem(${JSON.stringify(key)})`,
-                confidence: 1.0,
-                last_verified: Date.now(),
-                ttl_ms: MAP_CONSTANTS.TTL_NORMAL_MS,
-                fail_count_recent: 0,
-                locale: null,
-                created_at: Date.now(),
-              },
-            ],
-          };
-
-          baseNodes.push(rNode);
-          discoveredSummaries.push({
-            id: nodeId,
-            intent: rNode.intent,
-            type: 'storage_key',
-            category: 'local_persistence',
-            selector: `localStorage['${key}']`,
-            role: 'persistence',
-          });
-        }
-      }
-
-      // ======================================================================
-      // 5. Bóc tách TOÀN BỘ INTERACTIVE DOM (Tabs, Buttons, Inputs, Modals, Cards)
-      // ======================================================================
       onProgress?.('Bóc tách toàn bộ phần tử tương tác DOM (Tabs, Buttons, Inputs, Cards)...', 'cyan');
-
       const rawElements = await page.evaluate<Array<{
         tag: string;
         id: string;
@@ -346,259 +229,24 @@ export class LiveScoutEngine {
         role: string;
         text: string;
         selector: string;
-      }>>(`
-        (() => {
-          const results = [];
-          const seenSelectors = new Set();
+      }>>(ScoutScripts.getDomExtractionScript().code).catch(() => []);
 
-          // 1. Quét tất cả clickable elements: buttons, tabs, links, [role=button], nav-items
-          const clickables = document.querySelectorAll(
-            'button, [role="button"], a[href], .nav-menu-item, input[type="button"], input[type="submit"], [tabindex="0"]'
-          );
+      const wsUrls = await page.evaluate<string[]>(
+        ScoutScripts.getWebSocketDetectionScript().code
+      ).catch(() => []);
 
-          for (const el of clickables) {
-            const tag = el.tagName.toLowerCase();
-            const id = el.getAttribute('id') || '';
-            const text = (el.textContent?.trim() || el.getAttribute('aria-label') || el.getAttribute('title') || '').slice(0, 45);
-            if (!text && !id) continue;
-
-            let selector = '';
-            if (id) {
-              selector = '#' + id;
-            } else if (el.className && typeof el.className === 'string') {
-              const mainClass = el.className.split(' ').filter(c => c && !c.includes(':') && c.length < 30).slice(0, 2).join('.');
-              if (mainClass) {
-                selector = tag + '.' + mainClass;
-                if (text) selector += ':has-text("' + text + '")';
-              }
-            }
-            if (!selector && text) {
-              selector = tag + ':has-text("' + text + '")';
-            }
-            if (!selector) selector = tag;
-
-            if (!seenSelectors.has(selector)) {
-              seenSelectors.add(selector);
-              results.push({
-                tag,
-                id,
-                name: el.getAttribute('name') || '',
-                type: 'button',
-                role: el.getAttribute('role') || 'button',
-                text,
-                selector
-              });
-            }
-          }
-
-          // 2. Quét tất cả input fields, textareas, selects
-          const formControls = document.querySelectorAll('input:not([type="button"]):not([type="submit"]):not([type="hidden"]), textarea, select');
-          for (const fc of formControls) {
-            const tag = fc.tagName.toLowerCase();
-            const id = fc.getAttribute('id') || '';
-            const name = fc.getAttribute('name') || '';
-            const type = fc.getAttribute('type') || (tag === 'textarea' ? 'textarea' : 'text');
-            const placeholder = fc.getAttribute('placeholder') || '';
-
-            let selector = '';
-            if (id) selector = '#' + id;
-            else if (name) selector = tag + '[name="' + name + '"]';
-            else if (placeholder) selector = tag + '[placeholder="' + placeholder + '"]';
-            else selector = tag + '[type="' + type + '"]';
-
-            const label = id ? (document.querySelector('label[for="' + id + '"]')?.textContent?.trim() || '') : '';
-            const desc = label || placeholder || name || id || type;
-
-            if (!seenSelectors.has(selector)) {
-              seenSelectors.add(selector);
-              results.push({
-                tag,
-                id,
-                name,
-                type,
-                role: 'input',
-                text: desc,
-                selector
-              });
-            }
-          }
-
-          return results;
-        })()
-      `);
-
-      for (const el of rawElements) {
-        const keyBase = el.id || el.name || el.text.replace(/[^a-zA-Z0-9]/g, '_') || el.tag;
-        let nodeId = `node-${el.role}-${keyBase}`.replace(/_{2,}/g, '_').slice(0, 45);
-        let counter = 1;
-        while (nodeIdsSet.has(nodeId)) {
-          nodeId = `${nodeId}-${counter++}`;
-        }
-        nodeIdsSet.add(nodeId);
-
-        const intent = el.role === 'button'
-          ? (el.text ? `Nút ${el.text}` : `Nút ${el.tag}`)
-          : (el.text ? `Ô nhập ${el.text}` : `Trường dữ liệu ${el.name || el.id}`);
-
-        const variants: Variant[] = [
-          {
-            id: `var-css-${nodeId}`,
-            value_formula: el.selector,
-            confidence: 0.95,
-            last_verified: Date.now(),
-            ttl_ms: MAP_CONSTANTS.TTL_NORMAL_MS,
-            fail_count_recent: 0,
-            locale: null,
-            created_at: Date.now(),
-          },
-          {
-            id: `var-js-${nodeId}`,
-            value_formula: `document.querySelector(${JSON.stringify(el.selector)})`,
-            confidence: 0.9,
-            last_verified: Date.now(),
-            ttl_ms: MAP_CONSTANTS.TTL_NORMAL_MS,
-            fail_count_recent: 0,
-            locale: null,
-            created_at: Date.now(),
-          },
-        ];
-
-        const rNode: ResourceNode = {
-          id: nodeId,
-          type: 'dom_element',
-          intent,
-          created_at: Date.now(),
-          updated_at: Date.now(),
-          discovered_via: 'normal',
-          requires_elevation: false,
-          variants,
-        };
-
-        baseNodes.push(rNode);
-        discoveredSummaries.push({
-          id: nodeId,
-          intent,
-          type: el.type,
-          category: 'dom_element',
-          selector: el.selector,
-          role: el.role,
-        });
-
-        onProgress?.(`[DOM] ${intent} (${el.selector})`, 'yellow');
-      }
-
-      // ======================================================================
-      // 6. XÂY DỰNG STATE-TRANSITION GRAPH ĐA TẦNG (Lobby, Store, Leaderboard...)
-      // ======================================================================
-      onProgress?.('Xây dựng State-Transition Graph đa tầng...', 'cyan');
-
-      const stateGraph: StateNode[] = [
+      return ScoutProcessor.processRawScoutData(
         {
-          id: 'state-lobby',
-          match_key: {
-            url_pattern: `${url}*`,
-            dom_fingerprint: `lobby-fp-${domain}`,
-            virtual_route: null,
-          },
-          preconditions: [],
-          transitions: [
-            {
-              action_ref: 'act-nav-store',
-              target_state_id: 'state-store',
-            },
-            {
-              action_ref: 'act-nav-leaderboard',
-              target_state_id: 'state-leaderboard',
-            },
-            {
-              action_ref: 'act-nav-inventory',
-              target_state_id: 'state-inventory',
-            },
-          ],
+          url,
+          pageInfo: { title: pageTitle, url },
+          domElements: rawElements,
+          performanceEntries: perfResources,
+          storageKeys: storageData,
+          networkRequests: capturedEndpoints,
+          webSocketUrls: [...capturedWebSockets, ...wsUrls],
         },
-        {
-          id: 'state-store',
-          match_key: {
-            url_pattern: `${url}#modal=store*`,
-            dom_fingerprint: 'store-view',
-            virtual_route: 'store',
-          },
-          preconditions: [],
-          transitions: [
-            {
-              action_ref: 'act-nav-back',
-              target_state_id: 'state-lobby',
-            },
-          ],
-        },
-        {
-          id: 'state-leaderboard',
-          match_key: {
-            url_pattern: `${url}#modal=leaderboard*`,
-            dom_fingerprint: 'leaderboard-view',
-            virtual_route: 'leaderboard',
-          },
-          preconditions: [],
-          transitions: [],
-        },
-        {
-          id: 'state-inventory',
-          match_key: {
-            url_pattern: `${url}#modal=inventory*`,
-            dom_fingerprint: 'inventory-view',
-            virtual_route: 'inventory',
-          },
-          preconditions: [],
-          transitions: [],
-        },
-      ];
-
-      // ======================================================================
-      // 7. ĐÓNG GÓI BẢN ĐỒ MAPFILE HOÀN CHỈNH
-      // ======================================================================
-      const map: MapFile = {
-        schema_version: '1.0.0',
-        content_revision: 1,
-        domain,
-        bundle_id: null,
-        importance_score: 0.9,
-        importance_source: 'auto',
-        base_nodes: baseNodes,
-        account_slots: {},
-        state_graph: stateGraph,
-        created_at: Date.now(),
-        updated_at: Date.now(),
-      };
-
-      const summaryByType = {
-        domElements: baseNodes.filter(n => n.type === 'dom_element').length,
-        endpoints: baseNodes.filter(n => n.type === 'endpoint').length,
-        localPersistence: baseNodes.filter(n => n.type === 'local_persistence').length,
-        webSockets: baseNodes.filter(n => n.type === 'websocket_channel').length,
-        headers: baseNodes.filter(n => n.type === 'header_signature').length,
-        states: stateGraph.length,
-      };
-
-      onProgress?.(
-        `✅ Hoàn tất trinh sát toàn diện ${domain}: ` +
-          `${summaryByType.domElements} DOM elements, ` +
-          `${summaryByType.endpoints} Endpoints, ` +
-          `${summaryByType.localPersistence} Storage keys, ` +
-          `${summaryByType.webSockets} WebSockets, ` +
-          `${summaryByType.states} States!`,
-        'green'
+        onProgress
       );
-
-      return {
-        success: true,
-        domain,
-        url,
-        title: pageTitle,
-        map,
-        nodesCount: baseNodes.length,
-        summaryByType,
-        discoveredNodes: discoveredSummaries,
-      };
     } catch (err: any) {
       onProgress?.(`❌ Lỗi trong quá trình trinh sát: ${err.message}`, 'red');
       return {
@@ -638,127 +286,14 @@ export class LiveScoutEngine {
     localStorageKeys: string[];
     domElements: Array<{ tag: string; selector: string; text: string; role: string }>;
   }): MapFile {
-    const baseNodes: ResourceNode[] = [];
-    const nodeIdsSet = new Set<string>();
-
-    // 1. Endpoints
-    for (const epUrl of mcpData.endpoints) {
-      try {
-        const u = new URL(epUrl);
-        const nodeId = `endpoint-${u.pathname.replace(/[^a-zA-Z0-9]/g, '_')}`.slice(0, 45);
-        if (!nodeIdsSet.has(nodeId)) {
-          nodeIdsSet.add(nodeId);
-          baseNodes.push({
-            id: nodeId,
-            type: 'endpoint',
-            intent: `API Endpoint: ${u.pathname}`,
-            created_at: Date.now(),
-            updated_at: Date.now(),
-            discovered_via: 'normal',
-            requires_elevation: false,
-            variants: [
-              {
-                id: `var-${nodeId}`,
-                value_formula: epUrl,
-                confidence: 1.0,
-                last_verified: Date.now(),
-                ttl_ms: MAP_CONSTANTS.TTL_NORMAL_MS,
-                fail_count_recent: 0,
-                locale: null,
-                created_at: Date.now(),
-              },
-            ],
-          });
-        }
-      } catch {}
-    }
-
-    // 2. LocalStorage
-    for (const key of mcpData.localStorageKeys) {
-      const nodeId = `persistence-ls-${key.replace(/[^a-zA-Z0-9_]/g, '_')}`.slice(0, 45);
-      if (!nodeIdsSet.has(nodeId)) {
-        nodeIdsSet.add(nodeId);
-        baseNodes.push({
-          id: nodeId,
-          type: 'local_persistence',
-          intent: `Kho lưu trữ: ${key}`,
-          created_at: Date.now(),
-          updated_at: Date.now(),
-          discovered_via: 'normal',
-          requires_elevation: false,
-          variants: [
-            {
-              id: `var-${nodeId}`,
-              value_formula: `localStorage.getItem(${JSON.stringify(key)})`,
-              confidence: 1.0,
-              last_verified: Date.now(),
-              ttl_ms: MAP_CONSTANTS.TTL_NORMAL_MS,
-              fail_count_recent: 0,
-              locale: null,
-              created_at: Date.now(),
-            },
-          ],
-        });
-      }
-    }
-
-    // 3. DOM Elements
-    for (const el of mcpData.domElements) {
-      const keyBase = el.text.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 25) || el.tag;
-      let nodeId = `node-${el.role}-${keyBase}`;
-      let counter = 1;
-      while (nodeIdsSet.has(nodeId)) {
-        nodeId = `${nodeId}-${counter++}`;
-      }
-      nodeIdsSet.add(nodeId);
-
-      baseNodes.push({
-        id: nodeId,
-        type: 'dom_element',
-        intent: `${el.role === 'button' ? 'Nút' : 'Thẻ'} ${el.text}`,
-        created_at: Date.now(),
-        updated_at: Date.now(),
-        discovered_via: 'normal',
-        requires_elevation: false,
-        variants: [
-          {
-            id: `var-css-${nodeId}`,
-            value_formula: el.selector,
-            confidence: 0.95,
-            last_verified: Date.now(),
-            ttl_ms: MAP_CONSTANTS.TTL_NORMAL_MS,
-            fail_count_recent: 0,
-            locale: null,
-            created_at: Date.now(),
-          },
-        ],
-      });
-    }
-
-    return {
-      schema_version: '1.0.0',
-      content_revision: 1,
-      domain: mcpData.domain,
-      bundle_id: null,
-      importance_score: 0.9,
-      importance_source: 'auto',
-      base_nodes: baseNodes,
-      account_slots: {},
-      state_graph: [
-        {
-          id: 'state-initial',
-          match_key: {
-            url_pattern: `${mcpData.url}*`,
-            dom_fingerprint: 'mcp-captured',
-            virtual_route: null,
-          },
-          preconditions: [],
-          transitions: [],
-        },
-      ],
-      created_at: Date.now(),
-      updated_at: Date.now(),
-    };
+    const result = ScoutProcessor.processRawScoutData({
+      url: mcpData.url,
+      pageInfo: { title: mcpData.title, url: mcpData.url },
+      domElements: mcpData.domElements,
+      storageKeys: { localStorageKeys: mcpData.localStorageKeys },
+      networkRequests: mcpData.endpoints.map(ep => ({ url: ep, method: 'GET' })),
+    });
+    return result.map;
   }
 
   /**

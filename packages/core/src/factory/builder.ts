@@ -166,7 +166,16 @@ export class ToolFactory {
     const placeholders = Parameterizer.extractPlaceholders(actions);
     const inputParamsConfig = Parameterizer.buildInputParamsConfig(placeholders, options.param_overrides);
 
-    // Chuẩn bị actions để dry-run (nếu có param_values thì interpolate)
+    // Gán default_value từ param_values nếu config chưa có
+    if (options.param_values) {
+      for (const [key, val] of Object.entries(options.param_values)) {
+        if (inputParamsConfig[key] && inputParamsConfig[key].default_value === undefined) {
+          inputParamsConfig[key].default_value = val;
+        }
+      }
+    }
+
+    // Chuẩn bị actions để dry-run (nội suy giá trị tạm thời chỉ cho mục đích chạy thử trên browser)
     const executableActions = options.param_values
       ? Parameterizer.interpolateActions(actions, options.param_values)
       : actions;
@@ -193,7 +202,7 @@ export class ToolFactory {
       }
     }
 
-    // Tạo ToolConfig chuẩn
+    // Tạo ToolConfig chuẩn (GIỮ NGUYÊN placeholder {{param}} để người dùng cuối thay đổi tham số)
     const toolConfig: ToolConfig = {
       name: options.tool_name,
       description: `Tool generated for ${map.domain}`,
@@ -202,7 +211,7 @@ export class ToolFactory {
       map_content_revision: map.content_revision,
       package_type: options.package_type || 'chrome_extension',
       input_params: Parameterizer.toInputParamsList(inputParamsConfig),
-      actions,
+      actions: actions,
       map_snapshot: {
         nodes: mapSnapshot,
         states: [],
@@ -210,10 +219,10 @@ export class ToolFactory {
       built_at: Date.now(),
     };
 
-    // BƯỚC 5: Đóng gói (Package Extension)
+    // BƯỚC 5: Đóng gói (Package Extension — giữ nguyên template placeholder và resolveParamValue tại runtime)
     const packageResult = ExtensionPackager.package({
       toolConfig,
-      actions,
+      actions: actions,
       mapFile: map,
       outputDir: options.output_dir,
     });

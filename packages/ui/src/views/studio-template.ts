@@ -666,7 +666,20 @@ export function generateStudioHtml(options: StudioTemplateOptions = {}): string 
           </div>
           <p style="font-size: 13px; color: #cbd5e1; margin-top: 6px;">
             Quy trình Tháp: <b>Truy xuất toàn diện 7 loại tài nguyên</b> (Endpoints, Storage, DOM, WebSockets, States) ➔ <b>Nhập Prompt</b> ➔ AI Agent phân tích và đề xuất phương án ➔ <b>Chốt & Triển khai</b>!
+        </div>
+
+        <!-- MCP Server Panel (Kiến trúc B - Agent-Driven) -->
+        <div class="item-card" style="border: 1px solid rgba(74, 222, 128, 0.3); background: rgba(74, 222, 128, 0.05);">
+          <div class="item-title" style="color: var(--neon-green); display: flex; align-items: center; gap: 8px;">
+            <span>⚡ Tích Hợp Antigravity IDE (MCP Server)</span>
+            <span class="badge badge-healthy">Kiến trúc B (Agent-Driven)</span>
+          </div>
+          <p style="font-size: 13px; color: #cbd5e1; margin-top: 6px; line-height: 1.5;">
+            DevBrowserTool hoạt động như 1 MCP Server cung cấp 10 công cụ cho Agent. Agent tự điều khiển trình duyệt của mình (browser-mcp / chrome-devtools), DevBrowserTool đảm nhiệm xử lý tri thức, trích xuất 7 loại tài nguyên và đóng gói tool độc lập.
           </p>
+          <div style="background: rgba(0, 0, 0, 0.3); padding: 8px 12px; border-radius: 6px; margin-top: 8px; font-family: monospace; font-size: 12px; color: var(--neon-cyan);">
+            Quy trình scout: Agent gọi get_scout_scripts ➔ tự chạy JS trên page ➔ gọi ingest_scout_data ➔ Map được tạo và hiển thị ở đây
+          </div>
         </div>
 
         <!-- Chọn Map Website Nguồn & Thống kê tài nguyên -->

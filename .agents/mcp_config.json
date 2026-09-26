@@ -12,6 +12,11 @@
         "--auto-connect",
         "--no-usage-statistics"
       ]
+    },
+    "devbrowsertool": {
+      "command": "node",
+      "args": ["c:/Users/lethe/Downloads/FreeTime/DevBrowserTool/packages/mcp-bridge/dist/index.js"],
+      "cwd": "c:/Users/lethe/Downloads/FreeTime/DevBrowserTool"
     }
   }
 }

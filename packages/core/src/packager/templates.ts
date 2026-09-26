@@ -242,17 +242,56 @@ export function generateContentScript(
   // --------------------------------------------------------------------------
   // ELEMENT LOCATOR — 5-tier (Mục 6.1: Tier 1 Accessibility -> Tier 2 JS)
   // --------------------------------------------------------------------------
-  function normalizeFormula(formula) {
+  function resolveSelector(formula) {
     if (!formula) return null;
-    const trimmed = formula.trim();
-    if (trimmed.startsWith('document.') || trimmed.startsWith('window.') || trimmed.startsWith('(') || trimmed.startsWith('role:')) {
-      return trimmed;
+    let s = formula.trim();
+
+    // 1. Unwrap document.querySelector(...) hoặc document.getElementById(...)
+    if (s.startsWith('document.querySelector(') && s.endsWith(')')) {
+      s = s.slice('document.querySelector('.length, -1).trim();
+      if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'")) || (s.startsWith('\`') && s.endsWith('\`'))) {
+        s = s.slice(1, -1);
+      }
+      s = s.replace(/\\\\"/g, '"').replace(/\\\\'/g, "'");
+    } else if (s.startsWith('document.getElementById(') && s.endsWith(')')) {
+      let id = s.slice('document.getElementById('.length, -1).trim();
+      if ((id.startsWith('"') && id.endsWith('"')) || (id.startsWith("'") && id.endsWith("'"))) {
+        id = id.slice(1, -1);
+      }
+      return document.getElementById(id);
     }
-    return 'document.querySelector(' + JSON.stringify(trimmed) + ')';
+
+    // 2. Xử lý Playwright pseudo-class :has-text("...")
+    if (s.includes(':has-text(')) {
+      const idx = s.indexOf(':has-text(');
+      const baseSel = s.slice(0, idx).trim() || '*';
+      let textPart = s.slice(idx + ':has-text('.length);
+      if (textPart.endsWith(')')) textPart = textPart.slice(0, -1);
+      textPart = textPart.trim();
+      if ((textPart.startsWith('"') && textPart.endsWith('"')) || (textPart.startsWith("'") && textPart.endsWith("'"))) {
+        textPart = textPart.slice(1, -1);
+      }
+      textPart = textPart.replace(/\\\\"/g, '"').replace(/\\\\'/g, "'").toLowerCase();
+
+      try {
+        const elements = Array.from(document.querySelectorAll(baseSel));
+        const found = elements.find(el => (el.textContent || '').toLowerCase().includes(textPart));
+        if (found) return found;
+      } catch {}
+    }
+
+    // 3. Document querySelector thông thường (an toàn, không eval)
+    try {
+      const el = document.querySelector(s);
+      if (el) return el;
+    } catch {}
+
+    return null;
   }
 
   function locateElement(node, variant) {
-    const intent = (node?.intent || '').toLowerCase();
+    const rawIntent = (node?.intent || '').toLowerCase();
+    const intent = rawIntent.replace(/^(ô nhập|nút|chọn|link|input|button|field)\\s+/i, '').trim();
     const formula = variant?.value_formula || '';
 
     // Parse role/name nếu formula có dạng role:roleName[name="..."]
@@ -281,25 +320,36 @@ export function generateContentScript(
       }
     }
 
+    // Tier 2: JS/CSS query selector (CSP-safe, không dùng eval)
+    if (formula && !formula.startsWith('role:')) {
+      const el = resolveSelector(formula);
+      if (el) return { found: true, tier: 2, element: el };
+    }
+
+    // Tier 3: Semantic & Label matching theo intent
     if (intent) {
+      // Tìm qua label liên kết với input
+      const allLabels = Array.from(document.querySelectorAll('label'));
+      for (const lbl of allLabels) {
+        const lblText = (lbl.textContent || '').toLowerCase();
+        if (lblText.includes(intent)) {
+          const targetInput = lbl.querySelector('input, textarea, select') || 
+            (lbl.htmlFor ? document.getElementById(lbl.htmlFor) : null);
+          if (targetInput) return { found: true, tier: 1, element: targetInput };
+        }
+      }
+
       const byIntent = Array.from(document.querySelectorAll('button, a[href], input, textarea, select, [role], [aria-label]')).find(el => {
         const text = (el.textContent || '').toLowerCase();
         const label = (el.getAttribute('aria-label') || '').toLowerCase();
         const placeholder = (el.getAttribute('placeholder') || '').toLowerCase();
-        return (text && text.includes(intent)) || (label && label.includes(intent)) || (placeholder && placeholder.includes(intent));
+        const nameAttr = (el.getAttribute('name') || '').toLowerCase();
+        return (text && text.includes(intent)) || 
+               (label && label.includes(intent)) || 
+               (placeholder && placeholder.includes(intent)) ||
+               (nameAttr && nameAttr.includes(intent));
       });
       if (byIntent) return { found: true, tier: 1, element: byIntent };
-    }
-
-    // Tier 2: JS-query
-    if (formula && !formula.startsWith('role:')) {
-      try {
-        const jsExpr = normalizeFormula(formula);
-        const el = eval(jsExpr);
-        if (el) return { found: true, tier: 2, element: el };
-      } catch {
-        // ignore error
-      }
     }
 
     return { found: false, tier: 5, element: null };
@@ -308,6 +358,15 @@ export function generateContentScript(
   // --------------------------------------------------------------------------
   // ACTION PRIMITIVES (Mục 6)
   // --------------------------------------------------------------------------
+  function resolveParamValue(rawVal) {
+    if (typeof rawVal !== 'string') return rawVal;
+    return rawVal.replace(/\\{\\{([a-zA-Z0-9_-]+)\\}\\}/g, (m, key) => {
+      const ip = TOOL_CONFIG.input_params?.find(p => p.name === key);
+      if (ip && ip.default_value !== undefined) return ip.default_value;
+      return m;
+    });
+  }
+
   async function executeClick(node, variant) {
     const loc = locateElement(node, variant);
     if (!loc.found || !loc.element) {
@@ -323,14 +382,15 @@ export function generateContentScript(
       return { success: false, error: 'Element not found for fill' };
     }
     const el = loc.element;
+    const finalValue = resolveParamValue(value);
 
     // Phương pháp 1: Gán trực tiếp
-    el.value = value;
+    el.value = finalValue;
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
 
     // Đọc lại kiểm tra
-    if (el.value === value) {
+    if (el.value === finalValue) {
       return { success: true, used_fallback: loc.tier > 1, method: 'direct' };
     }
 
@@ -338,10 +398,10 @@ export function generateContentScript(
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set ||
                    Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
     if (setter) {
-      setter.call(el, value);
+      setter.call(el, finalValue);
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
-      return { success: el.value === value, used_fallback: loc.tier > 1, method: 'prototype_setter' };
+      return { success: el.value === finalValue, used_fallback: loc.tier > 1, method: 'prototype_setter' };
     }
 
     return { success: false, error: 'Failed to set value via direct or prototype setter' };

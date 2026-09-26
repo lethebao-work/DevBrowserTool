@@ -434,3 +434,27 @@ Các giá trị sau là số liệu CHÍNH THỨC, thay thế mọi cụm "ví d
 | Nhóm 1 / Nhóm 2 (anti-detection) | Xem Mục 8.1 |
 | Account slot | Định danh nội bộ (hash) của 1 tài khoản trong Map, không dùng thông tin thật |
 | Site Bundle | Nhóm nhiều domain liên quan trong cùng 1 luồng nghiệp vụ |
+
+---
+
+## 18. MÔ HÌNH VẬN HÀNH AGENT-DRIVEN MCP (ARCHITECTURE B)
+
+### 18.1 Nguyên tắc nền tảng
+- **Agent là người điều khiển phiên duyệt trình duyệt**: DevBrowserTool KHÔNG tự mở instance Playwright/Chromium độc lập trong luồng hoạt động thông thường của Agent (tránh xung đột session, anti-bot, cookies, và phân mảnh context giữa IDE Agent và Tool).
+- **Phân định rõ ràng trách nhiệm**:
+  - `browser-mcp` / `chrome-devtools`: Đảm nhiệm việc mở tab, tương tác giao diện người dùng, duy trì phiên đăng nhập và thực thi script trên trang web mục tiêu.
+  - `devbrowsertool` (MCP Server via stdio bridge `packages/mcp-bridge`): Đảm nhiệm vai trò Trí tuệ & Cấu trúc — cung cấp công thức trinh sát (Scout Recipes), trích xuất và lưu trữ Map 7 loại tài nguyên (Scout Processor & MapStore), đề xuất hành động (Action Proposer), biên dịch kịch bản (Action Compiler), và tự động đóng gói Extension MV3 / Userscripts (Tool Factory).
+  - `LiveScoutEngine (Playwright riêng)`: CHỈ đóng vai trò fallback cục bộ hoặc phục vụ kiểm thử thị giác độc lập (visual testing / headless CLI), KHÔNG phải là phương thức chính trong quy trình tương tác của Agent.
+
+### 18.2 Chu trình 5 bước Agent-Driven (Workflow)
+1. **Lấy công thức trinh sát**: Agent gọi `get_scout_scripts(categories)` từ DevBrowserTool để nhận các script JavaScript thuần (DOM interactive, Performance API, Storage, WebSocket sniffer).
+2. **Thực thi trên tab đang mở**: Agent dùng `browser_execute_script` (của browser-mcp) để chạy các recipe trên trang web người dùng đang duyệt.
+3. **Nạp dữ liệu & Xây dựng Map**: Agent gọi `ingest_scout_data(domain, raw_data)` gửi kết quả về cho DevBrowserTool. `ScoutProcessor` tự động phân loại thành 7 loại tài nguyên chuẩn (semantic DOM, API endpoints, web sockets, v.v.) và lưu trữ vào MapStore với versioning và hashing bảo mật.
+4. **Lập kế hoạch hành động**: Agent gọi `propose_actions(domain, intent)` để nhận danh sách hành động đề xuất. Agent sử dụng năng lực suy luận ngôn ngữ tự nhiên (LLM) để tinh chỉnh selector, tham số hóa biến động.
+5. **Biên dịch & Đóng gói**: Agent gọi `compile_actions` để lấy executable scripts (5-tier fallback locators, Bézier stealth mouse, randomized jitter), sau đó gọi `build_tool(domain, tool_name, tool_type)` để đóng gói sản phẩm hoàn chỉnh (Chrome Extension MV3 / Userscript / Advisor HUD) sẵn sàng tải vào trình duyệt người dùng.
+
+### 18.3 Ranh giới tin cậy (Trust Boundary) & Giới hạn đã biết
+- **Mô hình tin cậy Agent-in-the-Loop**: Trong Kiến trúc B, `ingest_scout_data` hoàn toàn tin tưởng dữ liệu do Agent cung cấp (DOM interactive nodes, Performance timing, Local Storage, WebSocket frames). Hệ thống backend KHÔNG thể tự xác minh độc lập tại tầng network/CDP rằng dữ liệu đó có thực sự được cào từ đúng URL khai báo tại thời điểm đó hay không.
+- **Mục đích thiết kế**: DevBrowserTool vận hành như một trợ lý kiến trúc và nhà máy sinh công cụ cục bộ cho cá nhân (Local Personal Agent Tool), không phải dịch vụ multi-tenant công cộng. Do đó, ranh giới tin cậy được đặt tại chính phiên làm việc của Agent. Bất kỳ hệ thống nào tích hợp downstream PHẢI ghi nhận ranh giới này: `ingest_scout_data` không có cơ chế chứng thực nguồn gốc dữ liệu độc lập (data provenance verification) ngoài định dạng schema đã validate qua Zod.
+- **Thao tác build_tool là 1-bước thuần backend**: Khác với `dry_run_tool` (yêu cầu mô hình 2 bước: lấy script thực thi và trả kết quả dry-run về server), `build_tool` là thao tác biên dịch mã nguồn và đóng gói artifact thuần túy trên đĩa (`~/.devbrowsertool/tools/<name>`), hoàn toàn không cần tương tác với trình duyệt. Vì vậy, việc giữ nguyên `build_tool` dạng 1-bước là quyết định có chủ đích và tối ưu về mặt kiến trúc.
+

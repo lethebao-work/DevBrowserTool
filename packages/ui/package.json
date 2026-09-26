@@ -73,7 +73,8 @@
     "bundle": "esbuild src/extension.ts --bundle --platform=node --target=node18 --external:vscode --external:chromium-bidi* --format=cjs --outfile=dist/extension.cjs"
   },
   "dependencies": {
-    "@devbrowsertool/core": "*"
+    "@devbrowsertool/core": "*",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/vscode": "^1.85.0",

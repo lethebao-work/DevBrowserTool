@@ -12,4 +12,6 @@ export * from './anti-debug.js';
 export * from './source-first.js';
 export * from './reverse-engineering-adapter.js';
 export * from './deep-discovery.js';
+export * from './scout-scripts.js';
+export * from './scout-processor.js';
 export * from './live-scout.js';
